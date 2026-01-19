@@ -1,0 +1,38 @@
+[Unit]
+Description=Second Brain Server
+After=network.target ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+User=brain
+Group=brain
+WorkingDirectory=/opt/brain-server
+
+# Environment file for secrets
+EnvironmentFile=/etc/brain-server/env
+
+# The server binary
+ExecStart=/opt/brain-server/brain-server
+
+# Restart on failure
+Restart=on-failure
+RestartSec=5
+
+# Give 30 seconds for graceful shutdown
+TimeoutStopSec=30
+
+# Logging to journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brain-server
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/brain-server
+
+[Install]
+WantedBy=multi-user.target
