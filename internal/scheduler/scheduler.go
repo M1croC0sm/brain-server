@@ -10,6 +10,7 @@ import (
 	"github.com/mrwolf/brain-server/internal/db"
 	"github.com/mrwolf/brain-server/internal/llm"
 	"github.com/mrwolf/brain-server/internal/models"
+	"github.com/mrwolf/brain-server/internal/signals"
 	"github.com/mrwolf/brain-server/internal/vault"
 )
 
@@ -47,7 +48,7 @@ func New(database *db.DB, v *vault.Vault, llmClient *llm.Client, cfg Config) (*S
 		db:        database,
 		vault:     v,
 		llm:       llmClient,
-		letterGen: NewLetterGenerator(llmClient),
+		letterGen: NewLetterGenerator(llmClient, database),
 		timezone:  tz,
 		actors:    cfg.Actors,
 	}, nil
@@ -55,9 +56,19 @@ func New(database *db.DB, v *vault.Vault, llmClient *llm.Client, cfg Config) (*S
 
 // Start starts the scheduler and registers all jobs
 func (s *Scheduler) Start() error {
-	// Daily letter at 06:00
+	// Signal decay at 03:45 (before daily letters, ready for 4am breakfast)
 	_, err := s.scheduler.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(6, 0, 0))),
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 45, 0))),
+		gocron.NewTask(s.decaySignals),
+		gocron.WithName("signal-decay"),
+	)
+	if err != nil {
+		return err
+	}
+
+	// Daily letter at 03:50 (ready for 4am breakfast)
+	_, err = s.scheduler.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(3, 50, 0))),
 		gocron.NewTask(s.generateDailyLetters),
 		gocron.WithName("daily-letters"),
 	)
@@ -65,9 +76,9 @@ func (s *Scheduler) Start() error {
 		return err
 	}
 
-	// Weekly letter on Sunday at 08:00
+	// Weekly letter on Sunday at 03:50 (ready for 4am breakfast)
 	_, err = s.scheduler.NewJob(
-		gocron.WeeklyJob(1, gocron.NewWeekdays(time.Sunday), gocron.NewAtTimes(gocron.NewAtTime(8, 0, 0))),
+		gocron.WeeklyJob(1, gocron.NewWeekdays(time.Sunday), gocron.NewAtTimes(gocron.NewAtTime(3, 50, 0))),
 		gocron.NewTask(s.generateWeeklyLetters),
 		gocron.WithName("weekly-letters"),
 	)
@@ -116,23 +127,25 @@ func (s *Scheduler) generateDailyLetters() {
 }
 
 func (s *Scheduler) generateDailyLetterForActor(ctx context.Context, actor string) {
-	// Get captures from last 24 hours
-	captures, err := s.getRecentCaptures(actor, 24*time.Hour)
-	if err != nil {
-		log.Printf("Error getting captures for %s: %v", actor, err)
-		return
-	}
+	now := time.Now().In(s.timezone)
 
-	summary := FormatCapturesSummary(captures)
-
-	content, err := s.letterGen.GenerateDailyLetter(ctx, actor, summary)
+	// Use signal-based letter generation
+	content, err := s.letterGen.GenerateDailyLetter(ctx, actor, now)
 	if err != nil {
 		log.Printf("Error generating daily letter for %s: %v", actor, err)
 		return
 	}
 
+	// Validate letter content
+	validation := signals.ValidateLetter(content, true)
+	if !validation.Valid {
+		log.Printf("Letter validation failed for %s: %v", actor, validation.Errors)
+		// Sanitize and use anyway for now
+		content, _ = signals.SanitizeLetter(content)
+	}
+
 	// Write letter to vault
-	today := time.Now().In(s.timezone).Format("2006-01-02")
+	today := now.Format("2006-01-02")
 	letterID := "let_" + today + "_" + actor + "_daily"
 
 	letter := vault.Letter{
@@ -165,23 +178,23 @@ func (s *Scheduler) generateWeeklyLetters() {
 }
 
 func (s *Scheduler) generateWeeklyLetterForActor(ctx context.Context, actor string) {
-	// Get captures from last 7 days
-	captures, err := s.getRecentCaptures(actor, 7*24*time.Hour)
-	if err != nil {
-		log.Printf("Error getting captures for %s: %v", actor, err)
-		return
-	}
+	now := time.Now().In(s.timezone)
 
-	summary := FormatCapturesSummary(captures)
-
-	content, err := s.letterGen.GenerateWeeklyLetter(ctx, actor, summary)
+	// Use signal-based letter generation
+	content, err := s.letterGen.GenerateWeeklyLetter(ctx, actor, now)
 	if err != nil {
 		log.Printf("Error generating weekly letter for %s: %v", actor, err)
 		return
 	}
 
+	// Validate letter content
+	validation := signals.ValidateLetter(content, false)
+	if !validation.Valid {
+		log.Printf("Weekly letter validation failed for %s: %v", actor, validation.Errors)
+		content, _ = signals.SanitizeLetter(content)
+	}
+
 	// Write letter to vault
-	now := time.Now().In(s.timezone)
 	year, week := now.ISOWeek()
 	weekStr := fmt.Sprintf("%d-W%02d", year, week)
 	letterID := "let_" + weekStr + "_" + actor + "_weekly"
@@ -229,6 +242,15 @@ func (s *Scheduler) healthCheck() {
 
 	if err := s.llm.HealthCheck(ctx); err != nil {
 		log.Printf("Health check failed - Ollama unreachable: %v", err)
+	}
+}
+
+func (s *Scheduler) decaySignals() {
+	log.Println("Running signal decay...")
+	if err := signals.DecayAllSignals(s.db); err != nil {
+		log.Printf("Signal decay failed: %v", err)
+	} else {
+		log.Println("Signal decay completed")
 	}
 }
 

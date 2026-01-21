@@ -95,7 +95,7 @@ func main() {
 	log.Println("Shutting down gracefully...")
 
 	// Give ongoing requests 10 seconds to complete
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {

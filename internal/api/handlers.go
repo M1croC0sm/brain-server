@@ -16,6 +16,7 @@ import (
 	"github.com/mrwolf/brain-server/internal/llm"
 	"github.com/mrwolf/brain-server/internal/models"
 	"github.com/mrwolf/brain-server/internal/scheduler"
+	"github.com/mrwolf/brain-server/internal/signals"
 	"github.com/mrwolf/brain-server/internal/vault"
 )
 
@@ -196,6 +197,9 @@ func (h *Handlers) Capture(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to write note", "WRITE_ERROR")
 		return
 	}
+
+	// Boost signals asynchronously (fail closed - doesn't affect capture)
+	go h.boostSignals(req.Text, result.Category)
 
 	// Trigger idea expansion asynchronously for Ideas category
 	if result.Category == models.CategoryIdeas {
@@ -407,6 +411,9 @@ func (h *Handlers) Clarify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Boost signals asynchronously (fail closed - doesn't affect clarify)
+	go h.boostSignals(pending.RawText, req.Destination)
+
 	resp := models.ClarifyResponse{
 		CaptureID: req.CaptureID,
 		Status:    models.StatusFiled,
@@ -570,4 +577,27 @@ func indexOf(s string, c byte) int {
 		}
 	}
 	return -1
+}
+
+// boostSignals updates the signal layer when a capture is filed
+// This runs asynchronously and failures don't affect the capture flow (fail closed)
+func (h *Handlers) boostSignals(text, category string) {
+	// Extract terms from the capture text
+	terms := signals.ExtractTerms(text, 5)
+
+	// Boost each term signal
+	for _, term := range terms {
+		key := "term:" + term
+		if err := signals.BoostSignal(h.db, key, "term"); err != nil {
+			log.Printf("Failed to boost term signal %s: %v", key, err)
+		}
+	}
+
+	// Boost category signal
+	if category != "" {
+		key := "cat:" + category
+		if err := signals.BoostSignal(h.db, key, "category"); err != nil {
+			log.Printf("Failed to boost category signal %s: %v", key, err)
+		}
+	}
 }

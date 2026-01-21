@@ -58,7 +58,7 @@ func TestPendingClarifications(t *testing.T) {
 	defer cleanup()
 
 	// Add pending
-	err := db.AddPending("cap_456", "wolf", "test text", `["Ideas","Projects"]`)
+	err := db.AddPending("cap_456", "wolf", "test text", `["Ideas","Projects"]`, time.Now().Format(time.RFC3339), "test-device")
 	if err != nil {
 		t.Fatalf("adding pending: %v", err)
 	}
@@ -120,13 +120,13 @@ func TestPendingExpiration(t *testing.T) {
 	}
 
 	// Expire should mark it
-	count, err := db.ExpirePending()
+	expired, err := db.ExpirePending()
 	if err != nil {
 		t.Fatalf("expiring pending: %v", err)
 	}
 
-	if count != 1 {
-		t.Errorf("expected 1 expired, got %d", count)
+	if len(expired) != 1 {
+		t.Errorf("expected 1 expired, got %d", len(expired))
 	}
 }
 
@@ -141,7 +141,7 @@ func TestLetters(t *testing.T) {
 	}
 
 	// Get letters
-	letters, err := db.GetLetters("daily", nil)
+	letters, err := db.GetLetters("", "daily", nil)
 	if err != nil {
 		t.Fatalf("getting letters: %v", err)
 	}

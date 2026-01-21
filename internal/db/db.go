@@ -73,12 +73,24 @@ CREATE TABLE IF NOT EXISTS scheduler_runs (
     error_message TEXT
 );
 
+-- Signal layer for letter generation
+-- Tracks long-term tendencies; letters use window evidence primarily
+CREATE TABLE IF NOT EXISTS signals (
+    key TEXT PRIMARY KEY,           -- e.g. "term:sleep", "project:trip_cave", "cat:Health"
+    type TEXT NOT NULL,             -- "term", "project", "category"
+    weight REAL NOT NULL DEFAULT 0,
+    last_updated TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    ever_dominant INTEGER DEFAULT 0 -- floor flag for PROJECTS ONLY
+);
+
 CREATE INDEX IF NOT EXISTS idx_pending_actor ON pending_clarifications(actor);
 CREATE INDEX IF NOT EXISTS idx_pending_expires ON pending_clarifications(expires_at);
 CREATE INDEX IF NOT EXISTS idx_letters_date ON letters(for_date);
 CREATE INDEX IF NOT EXISTS idx_transactions_actor ON transactions(actor);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(created_at);
 CREATE INDEX IF NOT EXISTS idx_scheduler_actor ON scheduler_runs(actor, job_type);
+CREATE INDEX IF NOT EXISTS idx_signals_type_weight ON signals(type, weight DESC);
 `
 
 type DB struct {
@@ -483,4 +495,129 @@ func (db *DB) GetLastSchedulerRun(actor, jobType string) (*SchedulerRun, error) 
 		run.ErrorMessage = errMsg.String
 	}
 	return &run, nil
+}
+
+// Signal represents a weighted signal for letter generation
+type Signal struct {
+	Key          string
+	Type         string // "term", "project", "category"
+	Weight       float64
+	LastUpdated  time.Time
+	CreatedAt    time.Time
+	EverDominant bool
+}
+
+// GetSignal returns a signal by key
+func (db *DB) GetSignal(key string) (*Signal, error) {
+	var s Signal
+	var lastUpdatedStr, createdAtStr string
+	var everDominant int
+	err := db.conn.QueryRow(`
+		SELECT key, type, weight, last_updated, created_at, ever_dominant
+		FROM signals WHERE key = ?
+	`, key).Scan(&s.Key, &s.Type, &s.Weight, &lastUpdatedStr, &createdAtStr, &everDominant)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	s.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr)
+	s.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+	s.EverDominant = everDominant == 1
+	return &s, nil
+}
+
+// UpsertSignal updates or inserts a signal with lazy decay then boost
+// The caller is responsible for computing the decayed weight before boosting
+func (db *DB) UpsertSignal(key, signalType string, weight float64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec(`
+		INSERT INTO signals (key, type, weight, last_updated, created_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			weight = ?,
+			last_updated = ?
+	`, key, signalType, weight, now, now, weight, now)
+	return err
+}
+
+// GetTopSignals returns top N signals of a given type by weight
+func (db *DB) GetTopSignals(signalType string, limit int) ([]Signal, error) {
+	rows, err := db.conn.Query(`
+		SELECT key, type, weight, last_updated, created_at, ever_dominant
+		FROM signals
+		WHERE type = ?
+		ORDER BY weight DESC
+		LIMIT ?
+	`, signalType, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var signals []Signal
+	for rows.Next() {
+		var s Signal
+		var lastUpdatedStr, createdAtStr string
+		var everDominant int
+		if err := rows.Scan(&s.Key, &s.Type, &s.Weight, &lastUpdatedStr, &createdAtStr, &everDominant); err != nil {
+			return nil, err
+		}
+		s.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr)
+		s.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+		s.EverDominant = everDominant == 1
+		signals = append(signals, s)
+	}
+	return signals, rows.Err()
+}
+
+// GetAllSignals returns all signals for decay processing
+func (db *DB) GetAllSignals() ([]Signal, error) {
+	rows, err := db.conn.Query(`
+		SELECT key, type, weight, last_updated, created_at, ever_dominant
+		FROM signals
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var signals []Signal
+	for rows.Next() {
+		var s Signal
+		var lastUpdatedStr, createdAtStr string
+		var everDominant int
+		if err := rows.Scan(&s.Key, &s.Type, &s.Weight, &lastUpdatedStr, &createdAtStr, &everDominant); err != nil {
+			return nil, err
+		}
+		s.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr)
+		s.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+		s.EverDominant = everDominant == 1
+		signals = append(signals, s)
+	}
+	return signals, rows.Err()
+}
+
+// UpdateSignalWeight updates the weight of a signal (used after decay)
+func (db *DB) UpdateSignalWeight(key string, weight float64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec(`
+		UPDATE signals SET weight = ?, last_updated = ? WHERE key = ?
+	`, weight, now, key)
+	return err
+}
+
+// MarkDominant sets the ever_dominant flag for a signal (projects only)
+func (db *DB) MarkDominant(key string) error {
+	_, err := db.conn.Exec(`
+		UPDATE signals SET ever_dominant = 1 WHERE key = ?
+	`, key)
+	return err
+}
+
+// DeleteSignal removes a signal (for cleanup of decayed-to-zero signals)
+func (db *DB) DeleteSignal(key string) error {
+	_, err := db.conn.Exec(`DELETE FROM signals WHERE key = ?`, key)
+	return err
 }
