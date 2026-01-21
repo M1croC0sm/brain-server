@@ -9,7 +9,7 @@ import (
 	"github.com/mrwolf/brain-server/internal/vault"
 )
 
-func NewRouter(cfg *config.Config, database *db.DB, v *vault.Vault, llmClient *llm.Client) *chi.Mux {
+func NewRouter(cfg *config.Config, database *db.DB, v *vault.Vault, llmClient *llm.Client) (*chi.Mux, *Handlers) {
 	r := chi.NewRouter()
 
 	// Global middleware
@@ -31,7 +31,11 @@ func NewRouter(cfg *config.Config, database *db.DB, v *vault.Vault, llmClient *l
 		r.Post("/clarify", handlers.Clarify)
 		r.Get("/pending", handlers.Pending)
 		r.Get("/letters", handlers.Letters)
+
+		// Test endpoints for manual letter generation
+		r.Post("/test/daily", handlers.TestGenerateDaily)
+		r.Post("/test/weekly", handlers.TestGenerateWeekly)
 	})
 
-	return r
+	return r, handlers
 }

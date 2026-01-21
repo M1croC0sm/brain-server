@@ -35,6 +35,12 @@ func writeError(w http.ResponseWriter, status int, message, code string) {
 	})
 }
 
+// LetterGenerator interface for test endpoints
+type LetterGenerator interface {
+	GenerateDailyNow(actor string) error
+	GenerateWeeklyNow(actor string) error
+}
+
 type Handlers struct {
 	cfg          *config.Config
 	db           *db.DB
@@ -42,6 +48,7 @@ type Handlers struct {
 	llm          *llm.Client
 	classifier   *classifier.Classifier
 	ideaExpander *scheduler.IdeaExpander
+	letterGen    LetterGenerator // optional, for test endpoints
 }
 
 func NewHandlers(cfg *config.Config, database *db.DB, v *vault.Vault, llmClient *llm.Client) *Handlers {
@@ -577,6 +584,63 @@ func indexOf(s string, c byte) int {
 		}
 	}
 	return -1
+}
+
+// SetLetterGenerator sets the letter generator for test endpoints
+func (h *Handlers) SetLetterGenerator(lg LetterGenerator) {
+	h.letterGen = lg
+}
+
+// TestGenerateDaily handles POST /test/daily - triggers daily letter generation
+func (h *Handlers) TestGenerateDaily(w http.ResponseWriter, r *http.Request) {
+	if h.letterGen == nil {
+		writeError(w, http.StatusServiceUnavailable, "letter generator not configured", "NOT_CONFIGURED")
+		return
+	}
+
+	actor := r.URL.Query().Get("actor")
+	if actor == "" {
+		actor = "wolf" // default
+	}
+
+	log.Printf("Test: generating daily letter for actor %s", actor)
+	if err := h.letterGen.GenerateDailyNow(actor); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error(), "GENERATION_FAILED")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+		"actor":  actor,
+		"type":   "daily",
+	})
+}
+
+// TestGenerateWeekly handles POST /test/weekly - triggers weekly letter generation
+func (h *Handlers) TestGenerateWeekly(w http.ResponseWriter, r *http.Request) {
+	if h.letterGen == nil {
+		writeError(w, http.StatusServiceUnavailable, "letter generator not configured", "NOT_CONFIGURED")
+		return
+	}
+
+	actor := r.URL.Query().Get("actor")
+	if actor == "" {
+		actor = "wolf" // default
+	}
+
+	log.Printf("Test: generating weekly letter for actor %s", actor)
+	if err := h.letterGen.GenerateWeeklyNow(actor); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error(), "GENERATION_FAILED")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+		"actor":  actor,
+		"type":   "weekly",
+	})
 }
 
 // boostSignals updates the signal layer when a capture is filed

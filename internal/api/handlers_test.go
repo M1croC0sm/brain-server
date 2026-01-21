@@ -49,7 +49,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, func()) {
 	v := vault.NewVault(vaultPath)
 	llmClient := llm.NewClient(cfg.OllamaURL, cfg.OllamaModel, cfg.OllamaModelHeavy)
 
-	router := NewRouter(cfg, database, v, llmClient)
+	router, _ := NewRouter(cfg, database, v, llmClient)
 	server := httptest.NewServer(router)
 
 	cleanup := func() {

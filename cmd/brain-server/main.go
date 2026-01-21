@@ -51,7 +51,7 @@ func main() {
 	cancel()
 
 	// Create router
-	router := api.NewRouter(cfg, database, v, llmClient)
+	router, handlers := api.NewRouter(cfg, database, v, llmClient)
 
 	// Create and start scheduler
 	actors := []string{}
@@ -72,6 +72,9 @@ func main() {
 	if err := sched.Start(); err != nil {
 		log.Fatalf("Failed to start scheduler: %v", err)
 	}
+
+	// Wire scheduler to handlers for test endpoints
+	handlers.SetLetterGenerator(sched)
 
 	// Start server
 	addr := ":" + cfg.Port
