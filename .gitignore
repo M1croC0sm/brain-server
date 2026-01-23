@@ -1,0 +1,15 @@
+# Environment variables
+.env
+
+# Build artifacts
+brain-server
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+test-brain.db
+
+# IDE
+.vscode/
+.idea/
