@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -14,11 +15,22 @@ import (
 const classifierPrompt = `You are a personal note classifier. Classify the following capture into exactly one category.
 
 Categories:
-- Ideas: Creative thoughts, concepts, "what if" musings, inventions
-- Projects: Actionable items with multiple steps, goals, tasks
-- Financial: Money, transactions, purchases, bills (handled separately)
-- Health: Body, mind, medical, fitness, wellness
-- Life: Emotions, relationships, events, reflections, state of being
+- Ideas: Creative thoughts, concepts, "what if" musings, inventions, possibilities
+- Projects: Personal goals requiring multiple steps (home improvement, learning skills, hobbies, creative endeavors - NOT fitness/health)
+- Financial: Money, transactions, purchases, bills, expenses, income
+- Health: Physical symptoms, medical matters, fitness activities, exercise routines, diet, nutrition, sleep, mental health, wellness
+- Life: Emotions, relationships, events, daily reflections, personal growth, state of being
+- Journal: Personal reflections, diary entries, daily thoughts, stream of consciousness
+- Spirituality: Spiritual practices, meditation, prayer, faith, meaning, philosophy
+
+Examples:
+- "I should start using the exercise bike" → Health (fitness activity)
+- "My back hurts" → Health (symptom)
+- "What if we could travel faster than light?" → Ideas
+- "I want to learn woodworking" → Projects (skill development)
+- "Spent £45 at Tesco" → Financial
+- "Feeling grateful today" → Life/Journal
+- "Need to meditate more" → Spirituality
 
 Capture: "%s"
 Actor: %s
@@ -26,7 +38,7 @@ Timestamp: %s
 
 Respond in JSON:
 {
-  "category": "Ideas|Projects|Financial|Health|Life",
+  "category": "Ideas|Projects|Financial|Health|Life|Journal|Spirituality",
   "confidence": 0.0-1.0,
   "title": "short descriptive title",
   "cleaned_text": "the capture, cleaned up and formatted",
@@ -85,9 +97,14 @@ func (c *Classifier) Classify(ctx context.Context, text, actor string, timestamp
 		return nil, fmt.Errorf("generating classification: %w", err)
 	}
 
+	// DEBUG: Log the raw LLM response
+	log.Printf("[CLASSIFIER DEBUG] Text: %q", text)
+	log.Printf("[CLASSIFIER DEBUG] LLM Response: %s", response)
+
 	// Parse response
 	var parsed models.ClassifierResult
 	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
+		log.Printf("[CLASSIFIER DEBUG] Parse error: %v", err)
 		// Return a parse error result instead of failing completely
 		return &Result{
 			ParseError:  true,
@@ -99,6 +116,7 @@ func (c *Classifier) Classify(ctx context.Context, text, actor string, timestamp
 	// Validate category
 	validCategory := validateCategory(parsed.Category)
 	if validCategory == "" {
+		log.Printf("[CLASSIFIER DEBUG] Invalid category: %q", parsed.Category)
 		// Invalid category is also a parse error
 		return &Result{
 			ParseError:  true,
@@ -106,6 +124,8 @@ func (c *Classifier) Classify(ctx context.Context, text, actor string, timestamp
 			Choices:     suggestChoices(""),
 		}, nil
 	}
+
+	log.Printf("[CLASSIFIER DEBUG] Classified as: %s (confidence: %.2f)", validCategory, parsed.Confidence)
 
 	result := &Result{
 		Category:    validCategory,
@@ -117,6 +137,7 @@ func (c *Classifier) Classify(ctx context.Context, text, actor string, timestamp
 
 	// Check if confidence is below threshold
 	if parsed.Confidence < c.confidenceThreshold {
+		log.Printf("[CLASSIFIER DEBUG] Low confidence (%.2f < %.2f), needs review", parsed.Confidence, c.confidenceThreshold)
 		result.NeedsReview = true
 		result.Choices = suggestChoices(parsed.Category)
 	}
@@ -171,6 +192,10 @@ func validateCategory(cat string) string {
 		return models.CategoryHealth
 	case "life":
 		return models.CategoryLife
+	case "journal":
+		return models.CategoryJournal
+	case "spirituality":
+		return models.CategorySpirituality
 	default:
 		return ""
 	}
@@ -183,6 +208,8 @@ func suggestChoices(primaryChoice string) []string {
 		models.CategoryFinancial,
 		models.CategoryHealth,
 		models.CategoryLife,
+		models.CategoryJournal,
+		models.CategorySpirituality,
 	}
 
 	// Put primary choice first, then others

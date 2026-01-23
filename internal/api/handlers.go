@@ -339,7 +339,7 @@ func (h *Handlers) handleClassificationFailure(w http.ResponseWriter, captureID,
 	h.vault.LogCapture(logEntry)
 
 	// Add to pending with all choices (include Financial)
-	choices := []string{models.CategoryIdeas, models.CategoryProjects, models.CategoryFinancial, models.CategoryHealth, models.CategoryLife}
+	choices := []string{models.CategoryIdeas, models.CategoryProjects, models.CategoryFinancial, models.CategoryHealth, models.CategoryLife, models.CategoryJournal, models.CategorySpirituality}
 	choicesJSON, _ := json.Marshal(choices)
 	h.db.AddPending(captureID, actor, req.Text, string(choicesJSON), timestamp.Format(time.RFC3339), req.DeviceID)
 

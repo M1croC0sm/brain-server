@@ -124,7 +124,9 @@ const (
 	CategoryProjects  = "Projects"
 	CategoryFinancial = "Financial"
 	CategoryHealth    = "Health"
-	CategoryLife      = "Life"
+	CategoryLife        = "Life"
+	CategoryJournal     = "Journal"
+	CategorySpirituality = "Spirituality"
 )
 
 // Status constants
