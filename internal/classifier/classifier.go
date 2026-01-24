@@ -20,7 +20,7 @@ Categories:
 - Financial: Money, transactions, purchases, bills, expenses, income
 - Health: Physical symptoms, medical matters, fitness activities, exercise routines, diet, nutrition, sleep, mental health, wellness
 - Life: Emotions, relationships, events, daily reflections, personal growth, state of being
-- Journal: Personal reflections, diary entries, daily thoughts, stream of consciousness
+- Journal: Personal reflections, diary entries, daily thoughts, stream of consciousness (trigger words: journal, dear diary, journaling)
 - Spirituality: Spiritual practices, meditation, prayer, faith, meaning, philosophy
 - Tasks: To-do items, reminders, things to remember, action items (starts with: todo, remember to, I have to, I need to, dont forget, must, should do)
 
@@ -30,15 +30,26 @@ Examples:
 - "What if we could travel faster than light?" → Ideas
 - "I want to learn woodworking" → Projects (skill development)
 - "Spent £45 at Tesco" → Financial
-- "Feeling grateful today" → Life/Journal
+- "Feeling grateful today" → Life
+- "Journal: today was a good day" → Journal (starts with journal)
+- "Dear diary, I had a weird dream" → Journal
+- "Spent - "Feeling grateful today" → Life/Journal on bananas" → Financial (purchase)
 - "Need to meditate more" → Spirituality
 - "Remember to call mom" → Tasks (to-do item)
 - "I have to pick up the dry cleaning" → Tasks (action item)
 - "Todo fix the leaky faucet" → Tasks (todo)
+- "Need to buy milk" → Tasks (shopping to-do)
+- "I need to get new shoes" → Tasks (purchase to-do)
 
 Capture: "%s"
 Actor: %s
 Timestamp: %s
+
+Confidence guidelines:
+- 0.9-1.0: Clear, unambiguous fit for exactly one category
+- 0.7-0.9: Good fit but could possibly be another category
+- 0.5-0.7: Ambiguous, could reasonably fit 2+ categories
+- Below 0.5: Gibberish, unintelligible, or too vague to classify
 
 Respond in JSON:
 {
@@ -220,7 +231,10 @@ func suggestChoices(primaryChoice string) []string {
 	}
 
 	// Put primary choice first, then others
-	choices := []string{primaryChoice}
+	var choices []string
+	if primaryChoice != "" && primaryChoice != "None" {
+		choices = append(choices, primaryChoice)
+	}
 	for _, cat := range allCategories {
 		if cat != primaryChoice {
 			choices = append(choices, cat)
