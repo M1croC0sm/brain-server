@@ -120,13 +120,14 @@ type TransactionResult struct {
 
 // Category constants
 const (
-	CategoryIdeas     = "Ideas"
-	CategoryProjects  = "Projects"
-	CategoryFinancial = "Financial"
-	CategoryHealth    = "Health"
-	CategoryLife        = "Life"
-	CategoryJournal     = "Journal"
+	CategoryIdeas        = "Ideas"
+	CategoryProjects     = "Projects"
+	CategoryFinancial    = "Financial"
+	CategoryHealth       = "Health"
+	CategoryLife         = "Life"
+	CategoryJournal      = "Journal"
 	CategorySpirituality = "Spirituality"
+	CategoryTasks        = "Tasks"
 )
 
 // Status constants

@@ -22,6 +22,7 @@ Categories:
 - Life: Emotions, relationships, events, daily reflections, personal growth, state of being
 - Journal: Personal reflections, diary entries, daily thoughts, stream of consciousness
 - Spirituality: Spiritual practices, meditation, prayer, faith, meaning, philosophy
+- Tasks: To-do items, reminders, things to remember, action items (starts with: todo, remember to, I have to, I need to, dont forget, must, should do)
 
 Examples:
 - "I should start using the exercise bike" → Health (fitness activity)
@@ -31,6 +32,9 @@ Examples:
 - "Spent £45 at Tesco" → Financial
 - "Feeling grateful today" → Life/Journal
 - "Need to meditate more" → Spirituality
+- "Remember to call mom" → Tasks (to-do item)
+- "I have to pick up the dry cleaning" → Tasks (action item)
+- "Todo fix the leaky faucet" → Tasks (todo)
 
 Capture: "%s"
 Actor: %s
@@ -38,7 +42,7 @@ Timestamp: %s
 
 Respond in JSON:
 {
-  "category": "Ideas|Projects|Financial|Health|Life|Journal|Spirituality",
+  "category": "Ideas|Projects|Financial|Health|Life|Journal|Spirituality|Tasks",
   "confidence": 0.0-1.0,
   "title": "short descriptive title",
   "cleaned_text": "the capture, cleaned up and formatted",
@@ -196,6 +200,8 @@ func validateCategory(cat string) string {
 		return models.CategoryJournal
 	case "spirituality":
 		return models.CategorySpirituality
+	case "tasks":
+		return models.CategoryTasks
 	default:
 		return ""
 	}
@@ -210,6 +216,7 @@ func suggestChoices(primaryChoice string) []string {
 		models.CategoryLife,
 		models.CategoryJournal,
 		models.CategorySpirituality,
+		models.CategoryTasks,
 	}
 
 	// Put primary choice first, then others
