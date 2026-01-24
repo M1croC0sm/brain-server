@@ -19,7 +19,7 @@ const dailyReportPrompt = `You are generating a brief daily report for a persona
 YOUR TASK:
 Look at the actual captures and trends above. Identify ONE meaningful pattern or direction that the person should be aware of. This could be:
 - Something they keep coming back to (recurring themes)
-- A shift in focus they may not have noticed  
+- A shift in focus they may not have noticed
 - An imbalance worth addressing
 - Something that went quiet that might need attention
 
@@ -37,30 +37,58 @@ ACTION: [One concrete, specific thing to do today - not vague advice]
 
 Generate the report now:`
 
-// Weekly letter prompt - system provides themes and countermove
-const weeklyLetterPrompt = `You are writing a weekly reflection. The system has analyzed the week.
+// Weekly report prompt - mental landscape focus
+const weeklyReportPrompt = `You are generating a weekly mental landscape report. This summarizes how someone's mind was working over the past week based on their captured thoughts.
 
 %s
 
-COUNTERMOVE TO CONSIDER: %s
+YOUR TASK:
+Analyze the week's mental activity. Focus on:
+- What ideas emerged and whether any connect
+- Which projects got attention (or didn't)
+- Health/Life/Spirituality signals (body and mind indicators)
+- Patterns in thinking or focus shifts
 
-CONSTRAINTS:
-- Write ONE paragraph only (3-4 sentences)
-- Include the countermove naturally, not as a command
-- Honest, not falsely positive
-- NEVER mention: money, spending, budgets, costs, prices, purchases, $, dollars
-- NEVER use: "journey", "growth mindset", "self-care", "boundaries", "space for"
-- Reference specific things from the week above
+VOICE REQUIREMENTS (CRITICAL):
+- STRICTLY THIRD PERSON: Write as an observer describing someone else
+- Use phrases like: "The mind was occupied with...", "Attention went to...", "There was focus on..."
+- NEVER use: "you", "your", "yourself", "I", "we", "our"
+- NEVER give advice phrased as commands: "Continue doing X", "Try to Y", "Focus on Z"
+- NEXT WEEK section should be an observation/suggestion, not a directive
 
-Write the letter now:`
+ACCURACY REQUIREMENTS:
+- ONLY reference what's explicitly in the data above
+- Quote or closely paraphrase actual captures when citing evidence
+- If a pattern isn't clearly supported by the data, don't mention it
+- Note absent categories (e.g., "No Life captures this week")
+
+FORBIDDEN:
+- Money, spending, budgets, financial matters
+- Words: "journey", "growth mindset", "self-care", "boundaries", "embrace"
+- Inventing or extrapolating beyond what's captured
+- Second-person advice or directives
+
+OUTPUT FORMAT (exactly this structure):
+THIS WEEK: [2-3 sentences on what dominated mental activity - third person]
+
+PATTERNS:
+- [Pattern 1 with specific evidence from captures]
+- [Pattern 2 with specific evidence from captures]
+- [Pattern 3 if clearly supported]
+
+SHIFTS: [What changed mid-week, or "No significant shifts detected"]
+
+NEXT WEEK: [One observation about what might warrant attention - phrased as "X could be worth revisiting" not "revisit X"]
+
+Generate the report now:`
 
 // Silence messages
 const (
 	silenceDaily  = "INSIGHT: No clear patterns yet.\nACTION: Capture a few thoughts today and check back tomorrow."
-	silenceWeekly = "Quiet week. Sometimes that's exactly what's needed."
+	silenceWeekly = "THIS WEEK: Quiet week with minimal mental capture activity.\n\nPATTERNS:\n- Insufficient data for pattern detection\n\nSHIFTS: No shifts detected.\n\nNEXT WEEK: Resume capturing thoughts to build a clearer picture."
 )
 
-// LetterGenerator generates daily and weekly letters using trend analysis
+// LetterGenerator generates daily and weekly reports using trend analysis
 type LetterGenerator struct {
 	llm      *llm.Client
 	database *db.DB
@@ -73,7 +101,7 @@ func NewLetterGenerator(client *llm.Client, database *db.DB) *LetterGenerator {
 
 // GenerateDailyLetter generates an enhanced daily report using 7-day trend data
 func (g *LetterGenerator) GenerateDailyLetter(ctx context.Context, actor string, date time.Time) (string, error) {
-	// 1. Build trend data from last 7 days
+	// 1. Build trend data from last 7 days (all categories for daily)
 	trend, err := signals.BuildTrendData(g.database, actor, date)
 	if err != nil {
 		return "", fmt.Errorf("building trend data: %w", err)
@@ -104,17 +132,17 @@ func (g *LetterGenerator) GenerateDailyLetter(ctx context.Context, actor string,
 	}
 
 	// 5. Validate and clean response
-	response = cleanReportResponse(response)
+	response = cleanDailyResponse(response)
 
 	return response, nil
 }
 
-// GenerateWeeklyLetter generates a weekly letter using trend data
+// GenerateWeeklyLetter generates a weekly mental landscape report
 func (g *LetterGenerator) GenerateWeeklyLetter(ctx context.Context, actor string, weekStart time.Time) (string, error) {
-	// 1. Build trend data
-	trend, err := signals.BuildTrendData(g.database, actor, weekStart)
+	// 1. Build trend data EXCLUDING Financial, Tasks, Journal
+	trend, err := signals.BuildWeeklyTrendData(g.database, actor, weekStart)
 	if err != nil {
-		return "", fmt.Errorf("building trend data: %w", err)
+		return "", fmt.Errorf("building weekly trend data: %w", err)
 	}
 
 	// 2. Check eligibility
@@ -123,59 +151,28 @@ func (g *LetterGenerator) GenerateWeeklyLetter(ctx context.Context, actor string
 		totalCaptures += day.CaptureCount
 	}
 
-	if totalCaptures < 5 {
+	if totalCaptures < 3 {
 		return silenceWeekly, nil
 	}
 
-	// 3. Select countermove based on trends
-	countermove := selectCountermove(trend)
+	// 3. Format context for LLM (weekly-specific format)
+	trendContext := signals.FormatWeeklyContext(trend)
+	prompt := fmt.Sprintf(weeklyReportPrompt, trendContext)
 
-	// 4. Format context for LLM
-	trendContext := signals.FormatTrendContext(trend)
-	prompt := fmt.Sprintf(weeklyLetterPrompt, trendContext, countermove)
-
-	// 5. Generate letter
+	// 4. Generate report
 	response, err := g.llm.GenerateText(ctx, prompt, true)
 	if err != nil {
-		return "", fmt.Errorf("generating weekly letter: %w", err)
+		return "", fmt.Errorf("generating weekly report: %w", err)
 	}
 
-	return strings.TrimSpace(response), nil
+	// 5. Clean response
+	response = cleanWeeklyResponse(response)
+
+	return response, nil
 }
 
-// selectCountermove picks an appropriate countermove based on trend data
-func selectCountermove(trend *signals.TrendData) string {
-	// Check for momentum shifts first
-	if len(trend.MomentumShifts) > 0 {
-		return "Something changed mid-week - worth asking why"
-	}
-
-	// Check category trends
-	for cat, direction := range trend.CategoryTrend {
-		if direction == "↓ declining" {
-			return fmt.Sprintf("%s dropped off - intentional or oversight?", cat)
-		}
-		if direction == "↑ increasing" && (cat == "Health" || cat == "Life") {
-			return fmt.Sprintf("%s is asking for attention - what does it need?", cat)
-		}
-	}
-
-	// Check for recurring themes
-	if len(trend.RecurringTerms) > 0 {
-		return fmt.Sprintf("You keep coming back to '%s' - worth exploring deeper?", trend.RecurringTerms[0])
-	}
-
-	// Default based on dominant theme
-	switch trend.DominantTheme {
-	case "quiet week":
-		return "Quiet doesn't mean empty - what's brewing under the surface?"
-	default:
-		return "What would make next week feel complete?"
-	}
-}
-
-// cleanReportResponse ensures the response follows the expected format
-func cleanReportResponse(response string) string {
+// cleanDailyResponse ensures the daily response follows the expected format
+func cleanDailyResponse(response string) string {
 	response = strings.TrimSpace(response)
 
 	// Check if it has the expected format
@@ -215,6 +212,25 @@ func cleanReportResponse(response string) string {
 
 	// Last resort: use response as insight, add generic action
 	return fmt.Sprintf("INSIGHT: %s\nACTION: Pick one thing from today's captures and take a small step on it.", response)
+}
+
+// cleanWeeklyResponse ensures the weekly response follows the expected format
+func cleanWeeklyResponse(response string) string {
+	response = strings.TrimSpace(response)
+
+	// Normalize section headers
+	response = strings.Replace(response, "this week:", "THIS WEEK:", 1)
+	response = strings.Replace(response, "This week:", "THIS WEEK:", 1)
+	response = strings.Replace(response, "This Week:", "THIS WEEK:", 1)
+	response = strings.Replace(response, "patterns:", "PATTERNS:", 1)
+	response = strings.Replace(response, "Patterns:", "PATTERNS:", 1)
+	response = strings.Replace(response, "shifts:", "SHIFTS:", 1)
+	response = strings.Replace(response, "Shifts:", "SHIFTS:", 1)
+	response = strings.Replace(response, "next week:", "NEXT WEEK:", 1)
+	response = strings.Replace(response, "Next week:", "NEXT WEEK:", 1)
+	response = strings.Replace(response, "Next Week:", "NEXT WEEK:", 1)
+
+	return response
 }
 
 // Legacy support: CaptureEntry for backward compatibility

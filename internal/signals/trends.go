@@ -9,26 +9,43 @@ import (
 	"github.com/mrwolf/brain-server/internal/db"
 )
 
+// Categories to exclude from weekly mental landscape report
+var WeeklyExcludeCategories = map[string]bool{
+	"Financial": true,
+	"Tasks":     true,
+	"Journal":   true,
+}
+
 // DaySummary holds captures grouped by day with summaries
 type DaySummary struct {
-	Date            string
-	DayOfWeek       string
-	CaptureCount    int
+	Date               string
+	DayOfWeek          string
+	CaptureCount       int
 	CapturesByCategory map[string][]string // category -> list of truncated texts
-	TopTerms        []string
+	TopTerms           []string
 }
 
 // TrendData holds multi-day trend analysis
 type TrendData struct {
-	Days            []DaySummary          // Last 7 days, most recent first
-	CategoryTrend   map[string]string     // category -> "↑ increasing", "↓ declining", "→ steady"
-	RecurringTerms  []string              // Terms appearing 3+ days
-	MomentumShifts  []string              // Notable changes: "Projects went quiet since Tuesday"
-	DominantTheme   string                // Overall theme across the week
+	Days           []DaySummary      // Last 7 days, most recent first
+	CategoryTrend  map[string]string // category -> "↑ increasing", "↓ declining", "→ steady"
+	RecurringTerms []string          // Terms appearing 3+ days
+	MomentumShifts []string          // Notable changes: "Projects went quiet since Tuesday"
+	DominantTheme  string            // Overall theme across the week
 }
 
-// BuildTrendData analyzes captures over the past 7 days
+// BuildTrendData analyzes captures over the past 7 days (all categories)
 func BuildTrendData(database *db.DB, actor string, now time.Time) (*TrendData, error) {
+	return buildTrendDataWithFilter(database, actor, now, nil)
+}
+
+// BuildWeeklyTrendData analyzes captures excluding Financial/Tasks/Journal
+func BuildWeeklyTrendData(database *db.DB, actor string, now time.Time) (*TrendData, error) {
+	return buildTrendDataWithFilter(database, actor, now, WeeklyExcludeCategories)
+}
+
+// buildTrendDataWithFilter analyzes captures with optional category exclusion
+func buildTrendDataWithFilter(database *db.DB, actor string, now time.Time, excludeCategories map[string]bool) (*TrendData, error) {
 	trend := &TrendData{
 		CategoryTrend: make(map[string]string),
 	}
@@ -45,8 +62,18 @@ func BuildTrendData(database *db.DB, actor string, now time.Time) (*TrendData, e
 	termDays := make(map[string]map[string]bool) // term -> set of dates it appeared
 
 	for _, c := range captures {
+		category := c.RoutedTo
+		if category == "" {
+			category = "Uncategorized"
+		}
+
+		// Skip excluded categories if filter is set
+		if excludeCategories != nil && excludeCategories[category] {
+			continue
+		}
+
 		dateStr := c.CreatedAt.Format("2006-01-02")
-		
+
 		if _, exists := dayMap[dateStr]; !exists {
 			dayMap[dateStr] = &DaySummary{
 				Date:               dateStr,
@@ -54,18 +81,14 @@ func BuildTrendData(database *db.DB, actor string, now time.Time) (*TrendData, e
 				CapturesByCategory: make(map[string][]string),
 			}
 		}
-		
+
 		day := dayMap[dateStr]
 		day.CaptureCount++
-		
+
 		// Add truncated text to category
-		category := c.RoutedTo
-		if category == "" {
-			category = "Uncategorized"
-		}
 		summary := truncateText(c.RawText, 60)
 		day.CapturesByCategory[category] = append(day.CapturesByCategory[category], summary)
-		
+
 		// Track terms across days
 		terms := ExtractTerms(c.RawText, 5)
 		for _, term := range terms {
@@ -82,7 +105,7 @@ func BuildTrendData(database *db.DB, actor string, now time.Time) (*TrendData, e
 		dates = append(dates, d)
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
-	
+
 	for _, d := range dates {
 		trend.Days = append(trend.Days, *dayMap[d])
 	}
@@ -153,7 +176,7 @@ func analyzeCategoryTrends(days []DaySummary) (map[string]string, []string) {
 					}
 				}
 				if lastActiveDay != "" {
-					shifts = append(shifts, fmt.Sprintf("%s went quiet since %s", cat, lastActiveDay))
+					shifts = append(shifts, fmt.Sprintf("%s went quiet after %s", cat, lastActiveDay))
 				}
 			}
 		} else {
@@ -169,7 +192,7 @@ func detectDominantTheme(trend *TrendData) string {
 	// Count total by category
 	catTotals := make(map[string]int)
 	totalCaptures := 0
-	
+
 	for _, day := range trend.Days {
 		for cat, captures := range day.CapturesByCategory {
 			catTotals[cat] += len(captures)
@@ -204,7 +227,7 @@ func detectDominantTheme(trend *TrendData) string {
 	return "mixed focus"
 }
 
-// FormatTrendContext creates the context string for the LLM prompt
+// FormatTrendContext creates the context string for the daily LLM prompt
 func FormatTrendContext(trend *TrendData) string {
 	var sb strings.Builder
 
@@ -215,7 +238,7 @@ func FormatTrendContext(trend *TrendData) string {
 			break
 		}
 		sb.WriteString(fmt.Sprintf("\n%s (%s) - %d captures:\n", day.DayOfWeek, day.Date, day.CaptureCount))
-		
+
 		for cat, texts := range day.CapturesByCategory {
 			if len(texts) > 3 {
 				texts = texts[:3] // Limit to 3 per category
@@ -250,6 +273,111 @@ func FormatTrendContext(trend *TrendData) string {
 	}
 
 	sb.WriteString(fmt.Sprintf("\nOVERALL: %s\n", trend.DominantTheme))
+
+	return sb.String()
+}
+
+// FormatWeeklyContext creates the context string for the weekly LLM prompt
+// Focuses on mental landscape: Ideas, Projects, Health, Life, Spirituality
+func FormatWeeklyContext(trend *TrendData) string {
+	var sb strings.Builder
+
+	// Count totals by category
+	catTotals := make(map[string]int)
+	allCaptures := make(map[string][]string) // category -> all capture texts
+
+	for _, day := range trend.Days {
+		for cat, texts := range day.CapturesByCategory {
+			catTotals[cat] += len(texts)
+			allCaptures[cat] = append(allCaptures[cat], texts...)
+		}
+	}
+
+	totalCaptures := 0
+	for _, count := range catTotals {
+		totalCaptures += count
+	}
+
+	sb.WriteString(fmt.Sprintf("WEEK OVERVIEW: %d captures across %d days\n\n", totalCaptures, len(trend.Days)))
+
+	// Ideas section
+	if ideas, ok := allCaptures["Ideas"]; ok && len(ideas) > 0 {
+		sb.WriteString(fmt.Sprintf("IDEAS (%d):\n", len(ideas)))
+		for _, idea := range ideas {
+			sb.WriteString(fmt.Sprintf("  - %s\n", idea))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Projects section
+	if projects, ok := allCaptures["Projects"]; ok && len(projects) > 0 {
+		sb.WriteString(fmt.Sprintf("PROJECTS (%d):\n", len(projects)))
+		for _, proj := range projects {
+			sb.WriteString(fmt.Sprintf("  - %s\n", proj))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Health section
+	if health, ok := allCaptures["Health"]; ok && len(health) > 0 {
+		sb.WriteString(fmt.Sprintf("HEALTH (%d):\n", len(health)))
+		for _, h := range health {
+			sb.WriteString(fmt.Sprintf("  - %s\n", h))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Life section
+	if life, ok := allCaptures["Life"]; ok && len(life) > 0 {
+		sb.WriteString(fmt.Sprintf("LIFE (%d):\n", len(life)))
+		for _, l := range life {
+			sb.WriteString(fmt.Sprintf("  - %s\n", l))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Spirituality section
+	if spirit, ok := allCaptures["Spirituality"]; ok && len(spirit) > 0 {
+		sb.WriteString(fmt.Sprintf("SPIRITUALITY (%d):\n", len(spirit)))
+		for _, s := range spirit {
+			sb.WriteString(fmt.Sprintf("  - %s\n", s))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Category trends
+	sb.WriteString("CATEGORY MOMENTUM:\n")
+	for cat, direction := range trend.CategoryTrend {
+		sb.WriteString(fmt.Sprintf("  %s: %s\n", cat, direction))
+	}
+
+	// Momentum shifts
+	if len(trend.MomentumShifts) > 0 {
+		sb.WriteString("\nSHIFTS DETECTED:\n")
+		for _, shift := range trend.MomentumShifts {
+			sb.WriteString(fmt.Sprintf("  - %s\n", shift))
+		}
+	}
+
+	// Recurring terms
+	if len(trend.RecurringTerms) > 0 {
+		terms := trend.RecurringTerms
+		if len(terms) > 5 {
+			terms = terms[:5]
+		}
+		sb.WriteString(fmt.Sprintf("\nRECURRING TERMS: %s\n", strings.Join(terms, ", ")))
+	}
+
+	// Absent categories
+	var absent []string
+	for _, cat := range []string{"Ideas", "Projects", "Health", "Life", "Spirituality"} {
+		if catTotals[cat] == 0 {
+			absent = append(absent, cat)
+		}
+	}
+	if len(absent) > 0 {
+		sb.WriteString(fmt.Sprintf("\nNO CAPTURES: %s\n", strings.Join(absent, ", ")))
+	}
 
 	return sb.String()
 }
