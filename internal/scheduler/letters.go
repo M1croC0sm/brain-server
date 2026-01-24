@@ -11,40 +11,38 @@ import (
 	"github.com/mrwolf/brain-server/internal/signals"
 )
 
-// Daily letter prompt - system provides all context, LLM articulates
-const dailyLetterPrompt = `You are writing a brief daily letter. The system has already analyzed today's activity.
+// Enhanced daily report prompt - includes actual content and 7-day trends
+const dailyReportPrompt = `You are generating a brief daily report for a personal life capture system.
 
-CONTEXT (pre-computed by system):
-- Date: %s
-- Capture count: %d
-- Activity mix: %s
-- Top focus areas: %s
-- Temporal shape: %s
-%s%s
+%s
+
+YOUR TASK:
+Look at the actual captures and trends above. Identify ONE meaningful pattern or direction that the person should be aware of. This could be:
+- Something they keep coming back to (recurring themes)
+- A shift in focus they may not have noticed  
+- An imbalance worth addressing
+- Something that went quiet that might need attention
 
 CONSTRAINTS:
-- Write 2-3 SHORT sentences maximum
-- Start directly, no greeting
-- End directly, no signoff
-- Warm but not saccharine
-- NEVER mention: money, spending, budgets, costs, prices, purchases, $, dollars
-- NEVER use: "journey", "growth mindset", "self-care", "boundaries", "space for"
-- Do not invent details not provided above
-- If action is provided, include it naturally; if not, observation only
+- Be specific - reference actual captures/themes you see above
+- Be honest - if there's no clear pattern, say so briefly
+- NEVER mention: money amounts, spending, budgets, prices, purchases, dollars
+- NEVER use: "journey", "growth mindset", "self-care", "boundaries", "embrace", "space for"
+- No greeting or signoff
+- No generic advice like "take time to reflect"
 
-Write the letter now:`
+OUTPUT FORMAT (exactly this structure):
+INSIGHT: [One sentence describing the pattern or direction you notice - be specific]
+ACTION: [One concrete, specific thing to do today - not vague advice]
+
+Generate the report now:`
 
 // Weekly letter prompt - system provides themes and countermove
 const weeklyLetterPrompt = `You are writing a weekly reflection. The system has analyzed the week.
 
-CONTEXT (pre-computed by system):
-- Week: %s
-- Capture count: %d
-- Activity mix: %s
-- Top themes: %s
-- Projects active: %s
 %s
-COUNTERMOVE TO INCLUDE: %s
+
+COUNTERMOVE TO CONSIDER: %s
 
 CONSTRAINTS:
 - Write ONE paragraph only (3-4 sentences)
@@ -52,14 +50,17 @@ CONSTRAINTS:
 - Honest, not falsely positive
 - NEVER mention: money, spending, budgets, costs, prices, purchases, $, dollars
 - NEVER use: "journey", "growth mindset", "self-care", "boundaries", "space for"
-- Do not invent details not provided
+- Reference specific things from the week above
 
 Write the letter now:`
 
-// Silence letter - used when no theme selected
-const silenceLetter = "Nothing pressing today. Carry on."
+// Silence messages
+const (
+	silenceDaily  = "INSIGHT: No clear patterns yet.\nACTION: Capture a few thoughts today and check back tomorrow."
+	silenceWeekly = "Quiet week. Sometimes that's exactly what's needed."
+)
 
-// LetterGenerator generates daily and weekly letters using signal profiles
+// LetterGenerator generates daily and weekly letters using trend analysis
 type LetterGenerator struct {
 	llm      *llm.Client
 	database *db.DB
@@ -70,162 +71,158 @@ func NewLetterGenerator(client *llm.Client, database *db.DB) *LetterGenerator {
 	return &LetterGenerator{llm: client, database: database}
 }
 
-// GenerateDailyLetter generates a daily letter using the signal layer
+// GenerateDailyLetter generates an enhanced daily report using 7-day trend data
 func (g *LetterGenerator) GenerateDailyLetter(ctx context.Context, actor string, date time.Time) (string, error) {
-	// 1. Build profile from window evidence
-	profile, err := signals.BuildDayProfile(g.database, actor, date)
+	// 1. Build trend data from last 7 days
+	trend, err := signals.BuildTrendData(g.database, actor, date)
 	if err != nil {
-		return "", fmt.Errorf("building day profile: %w", err)
+		return "", fmt.Errorf("building trend data: %w", err)
 	}
 
-	// 2. Check eligibility
-	if !signals.IsDailyEligible(profile) {
-		return silenceLetter, nil
+	// 2. Check if there's enough data
+	totalCaptures := 0
+	for _, day := range trend.Days {
+		totalCaptures += day.CaptureCount
 	}
 
-	// 3. Apply theme and action selection
-	signals.ApplyThemeSelection(profile)
-
-	// 4. Check if silence is appropriate (no theme selected)
-	if profile.SelectedTheme == nil && profile.BestNextAction == nil {
-		return silenceLetter, nil
+	if totalCaptures == 0 {
+		return silenceDaily, nil
 	}
 
-	// 5. Format context for LLM
-	prompt := formatDailyPrompt(profile)
+	if totalCaptures < 3 {
+		return "INSIGHT: Light week so far - not enough data for patterns.\nACTION: Keep capturing thoughts and check back in a day or two.", nil
+	}
 
-	// 6. Generate letter
+	// 3. Format context for LLM
+	trendContext := signals.FormatTrendContext(trend)
+	prompt := fmt.Sprintf(dailyReportPrompt, trendContext)
+
+	// 4. Generate report
 	response, err := g.llm.GenerateText(ctx, prompt, true)
 	if err != nil {
-		return "", fmt.Errorf("generating daily letter: %w", err)
+		return "", fmt.Errorf("generating daily report: %w", err)
 	}
+
+	// 5. Validate and clean response
+	response = cleanReportResponse(response)
 
 	return response, nil
 }
 
-// GenerateWeeklyLetter generates a weekly letter using the signal layer
+// GenerateWeeklyLetter generates a weekly letter using trend data
 func (g *LetterGenerator) GenerateWeeklyLetter(ctx context.Context, actor string, weekStart time.Time) (string, error) {
-	// 1. Build profile from window evidence
-	profile, err := signals.BuildWeekProfile(g.database, actor, weekStart)
+	// 1. Build trend data
+	trend, err := signals.BuildTrendData(g.database, actor, weekStart)
 	if err != nil {
-		return "", fmt.Errorf("building week profile: %w", err)
+		return "", fmt.Errorf("building trend data: %w", err)
 	}
 
 	// 2. Check eligibility
-	if !signals.IsWeeklyEligible(profile) {
-		return "Quiet week. Sometimes that's exactly what's needed.", nil
+	totalCaptures := 0
+	for _, day := range trend.Days {
+		totalCaptures += day.CaptureCount
 	}
 
-	// 3. Apply theme selection
-	signals.ApplyWeeklyThemeSelection(profile)
+	if totalCaptures < 5 {
+		return silenceWeekly, nil
+	}
 
-	// 4. Select countermove
-	countermove := signals.SelectWeeklyCountermove(profile)
+	// 3. Select countermove based on trends
+	countermove := selectCountermove(trend)
 
-	// 5. Format context for LLM
-	prompt := formatWeeklyPrompt(profile, countermove)
+	// 4. Format context for LLM
+	trendContext := signals.FormatTrendContext(trend)
+	prompt := fmt.Sprintf(weeklyLetterPrompt, trendContext, countermove)
 
-	// 6. Generate letter
+	// 5. Generate letter
 	response, err := g.llm.GenerateText(ctx, prompt, true)
 	if err != nil {
 		return "", fmt.Errorf("generating weekly letter: %w", err)
 	}
 
-	return response, nil
+	return strings.TrimSpace(response), nil
 }
 
-// formatDailyPrompt builds the prompt from a day profile
-func formatDailyPrompt(profile *DayProfile) string {
-	// Activity mix
-	activityMix := signals.GetCategoryMixLabel(profile.CountsByCategory)
-
-	// Top terms
-	var topTerms []string
-	for _, tc := range profile.TopTermsInWindow {
-		topTerms = append(topTerms, tc.Term)
-	}
-	topTermsStr := "none detected"
-	if len(topTerms) > 0 {
-		topTermsStr = strings.Join(topTerms, ", ")
+// selectCountermove picks an appropriate countermove based on trend data
+func selectCountermove(trend *signals.TrendData) string {
+	// Check for momentum shifts first
+	if len(trend.MomentumShifts) > 0 {
+		return "Something changed mid-week - worth asking why"
 	}
 
-	// Theme line (if selected)
-	themeLine := ""
-	if profile.SelectedTheme != nil {
-		themeLine = fmt.Sprintf("- Detected theme: %s (evidence: %d)\n",
-			profile.SelectedTheme.Name, profile.SelectedTheme.Evidence)
-	}
-
-	// Action line (if selected)
-	actionLine := ""
-	if profile.BestNextAction != nil {
-		actionLine = fmt.Sprintf("- Suggested action: %s\n", profile.BestNextAction.Text)
-	}
-
-	return fmt.Sprintf(dailyLetterPrompt,
-		profile.Date,
-		profile.CaptureCount,
-		activityMix,
-		topTermsStr,
-		profile.TemporalShape,
-		themeLine,
-		actionLine,
-	)
-}
-
-// formatWeeklyPrompt builds the prompt from a week profile
-func formatWeeklyPrompt(profile *WeekProfile, countermove string) string {
-	// Activity mix
-	activityMix := signals.GetCategoryMixLabel(profile.CountsByCategory)
-
-	// Top themes
-	var themes []string
-	for _, tc := range profile.ThemeCandidates {
-		if len(themes) >= 3 {
-			break
+	// Check category trends
+	for cat, direction := range trend.CategoryTrend {
+		if direction == "↓ declining" {
+			return fmt.Sprintf("%s dropped off - intentional or oversight?", cat)
 		}
-		themes = append(themes, tc.Name)
-	}
-	themesStr := "no clear themes"
-	if len(themes) > 0 {
-		themesStr = strings.Join(themes, ", ")
-	}
-
-	// Projects
-	var projects []string
-	for _, pa := range profile.ProjectActivity {
-		if len(projects) >= 3 {
-			break
+		if direction == "↑ increasing" && (cat == "Health" || cat == "Life") {
+			return fmt.Sprintf("%s is asking for attention - what does it need?", cat)
 		}
-		projects = append(projects, fmt.Sprintf("%s (%d)", pa.Name, pa.MentionCount))
-	}
-	projectsStr := "none"
-	if len(projects) > 0 {
-		projectsStr = strings.Join(projects, ", ")
 	}
 
-	// Selected theme line
-	themeLine := ""
-	if profile.SelectedTheme != nil {
-		themeLine = fmt.Sprintf("- Primary theme: %s\n", profile.SelectedTheme.Name)
+	// Check for recurring themes
+	if len(trend.RecurringTerms) > 0 {
+		return fmt.Sprintf("You keep coming back to '%s' - worth exploring deeper?", trend.RecurringTerms[0])
 	}
 
-	return fmt.Sprintf(weeklyLetterPrompt,
-		profile.WeekID,
-		profile.CaptureCount,
-		activityMix,
-		themesStr,
-		projectsStr,
-		themeLine,
-		countermove,
-	)
+	// Default based on dominant theme
+	switch trend.DominantTheme {
+	case "quiet week":
+		return "Quiet doesn't mean empty - what's brewing under the surface?"
+	default:
+		return "What would make next week feel complete?"
+	}
 }
 
-// DayProfile alias for use in this package
-type DayProfile = signals.DayProfile
+// cleanReportResponse ensures the response follows the expected format
+func cleanReportResponse(response string) string {
+	response = strings.TrimSpace(response)
 
-// WeekProfile alias for use in this package
-type WeekProfile = signals.WeekProfile
+	// Check if it has the expected format
+	hasInsight := strings.Contains(strings.ToUpper(response), "INSIGHT:")
+	hasAction := strings.Contains(strings.ToUpper(response), "ACTION:")
+
+	if hasInsight && hasAction {
+		// Normalize case
+		response = strings.Replace(response, "insight:", "INSIGHT:", 1)
+		response = strings.Replace(response, "Insight:", "INSIGHT:", 1)
+		response = strings.Replace(response, "action:", "ACTION:", 1)
+		response = strings.Replace(response, "Action:", "ACTION:", 1)
+		return response
+	}
+
+	// If LLM didn't follow format, try to parse it
+	lines := strings.Split(response, "\n")
+	if len(lines) >= 2 {
+		// Assume first non-empty line is insight, find action
+		var insight, action string
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if insight == "" {
+				insight = line
+			} else {
+				action = line
+				break
+			}
+		}
+		if insight != "" && action != "" {
+			return fmt.Sprintf("INSIGHT: %s\nACTION: %s", insight, action)
+		}
+	}
+
+	// Last resort: use response as insight, add generic action
+	return fmt.Sprintf("INSIGHT: %s\nACTION: Pick one thing from today's captures and take a small step on it.", response)
+}
+
+// Legacy support: CaptureEntry for backward compatibility
+type CaptureEntry struct {
+	Text      string
+	Category  string
+	Timestamp time.Time
+}
 
 // Legacy support: FormatCapturesSummary for backward compatibility
 // DEPRECATED: Use GenerateDailyLetter with database instead
@@ -239,13 +236,6 @@ func FormatCapturesSummary(captures []CaptureEntry) string {
 		summary += fmt.Sprintf("- [%s] %s: %s\n", c.Category, c.Timestamp.Format("15:04"), truncate(c.Text, 100))
 	}
 	return summary
-}
-
-// CaptureEntry represents a capture for summarization (legacy)
-type CaptureEntry struct {
-	Text      string
-	Category  string
-	Timestamp time.Time
 }
 
 func truncate(s string, maxLen int) string {
