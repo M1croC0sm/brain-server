@@ -89,8 +89,8 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.Port != "8080" {
 		t.Errorf("default port should be 8080")
 	}
-	if cfg.OllamaModel != "qwen2.5:7b" {
-		t.Errorf("default model should be qwen2.5:7b")
+	if cfg.OllamaModel != "qwen2.5:14b-instruct" {
+		t.Errorf("default model should be qwen2.5:14b-instruct")
 	}
 	if cfg.Timezone != "Europe/London" {
 		t.Errorf("default timezone should be Europe/London")
