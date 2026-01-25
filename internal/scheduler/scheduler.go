@@ -12,6 +12,7 @@ import (
 	"github.com/mrwolf/brain-server/internal/models"
 	"github.com/mrwolf/brain-server/internal/signals"
 	"github.com/mrwolf/brain-server/internal/vault"
+	"github.com/mrwolf/brain-server/internal/narrator"
 )
 
 // Scheduler manages scheduled jobs
@@ -23,6 +24,7 @@ type Scheduler struct {
 	letterGen *LetterGenerator
 	timezone  *time.Location
 	actors    []string
+	narrator  *narrator.Narrator
 }
 
 // Config holds scheduler configuration
@@ -285,5 +287,60 @@ func (s *Scheduler) GenerateWeeklyNow(actor string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	s.generateWeeklyLetterForActor(ctx, actor)
+	return nil
+}
+
+// SetNarrator sets the narrator instance (for journal processing)
+func (s *Scheduler) SetNarrator(n *narrator.Narrator) {
+	s.narrator = n
+}
+
+// AddNarratorJob adds the nightly journal narration job
+func (s *Scheduler) AddNarratorJob() error {
+	if s.narrator == nil {
+		return fmt.Errorf("narrator not set")
+	}
+
+	// Nightly journal close at 22:00
+	_, err := s.scheduler.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(22, 0, 0))),
+		gocron.NewTask(s.narrateJournal),
+		gocron.WithName("journal-narrator"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to schedule journal narrator: %w", err)
+	}
+
+	log.Println("Narrator nightly job scheduled for 22:00")
+	return nil
+}
+
+func (s *Scheduler) narrateJournal() {
+	log.Println("Running nightly journal narration...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if err := s.narrator.NightlyClose(ctx); err != nil {
+		log.Printf("Journal narrator failed: %v", err)
+	} else {
+		log.Println("Journal narration completed")
+	}
+}
+
+// NarrateJournalNow triggers journal narration immediately (for testing)
+func (s *Scheduler) NarrateJournalNow() error {
+	if s.narrator == nil {
+		return fmt.Errorf("narrator not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	result, err := s.narrator.Update(ctx)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Journal narration: processed %d entries, updated %d days", result.ProcessedCount, len(result.DaysUpdated))
 	return nil
 }

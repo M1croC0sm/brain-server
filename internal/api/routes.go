@@ -39,3 +39,13 @@ func NewRouter(cfg *config.Config, database *db.DB, v *vault.Vault, llmClient *l
 
 	return r, handlers
 }
+
+// AddJournalRoutes adds journal-related routes (call after narrator is set)
+func AddJournalRoutes(r *chi.Mux, h *Handlers, cfg *config.Config) {
+	r.Route("/api/v1/journal", func(r chi.Router) {
+		r.Use(AuthMiddleware(cfg))
+		r.Use(JSONContentType)
+		r.Post("/update", h.JournalUpdate)
+		r.Get("/status", h.JournalStatus)
+	})
+}

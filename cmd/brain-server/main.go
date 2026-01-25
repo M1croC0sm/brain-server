@@ -13,6 +13,7 @@ import (
 	"github.com/mrwolf/brain-server/internal/config"
 	"github.com/mrwolf/brain-server/internal/db"
 	"github.com/mrwolf/brain-server/internal/llm"
+	"github.com/mrwolf/brain-server/internal/narrator"
 	"github.com/mrwolf/brain-server/internal/scheduler"
 	"github.com/mrwolf/brain-server/internal/vault"
 )
@@ -50,6 +51,18 @@ func main() {
 	}
 	cancel()
 
+	// Create narrator for journal processing
+	llmAdapter := narrator.NewBrainServerAdapter(llmClient)
+	narratorConfig := narrator.DefaultConfig(cfg.VaultPath)
+	narr, err := narrator.New(llmAdapter, narratorConfig)
+	if err != nil {
+		log.Printf("WARNING: Failed to create narrator: %v", err)
+		log.Println("Journal narration features will not be available")
+		narr = nil
+	} else {
+		log.Println("Narrator initialized")
+	}
+
 	// Create router
 	router, handlers := api.NewRouter(cfg, database, v, llmClient)
 
@@ -75,6 +88,18 @@ func main() {
 
 	// Wire scheduler to handlers for test endpoints
 	handlers.SetLetterGenerator(sched)
+
+	// Wire narrator to handlers and scheduler
+	if narr != nil {
+		handlers.SetNarrator(narr)
+		sched.SetNarrator(narr)
+		if err := sched.AddNarratorJob(); err != nil {
+			log.Printf("WARNING: Failed to add narrator job: %v", err)
+		}
+		// Add journal routes
+		api.AddJournalRoutes(router, handlers, cfg)
+		log.Println("Journal routes and scheduler configured")
+	}
 
 	// Start server
 	addr := ":" + cfg.Port

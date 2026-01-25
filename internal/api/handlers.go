@@ -18,6 +18,7 @@ import (
 	"github.com/mrwolf/brain-server/internal/scheduler"
 	"github.com/mrwolf/brain-server/internal/signals"
 	"github.com/mrwolf/brain-server/internal/vault"
+	"github.com/mrwolf/brain-server/internal/narrator"
 )
 
 // ErrorResponse is the standard error response format
@@ -48,7 +49,8 @@ type Handlers struct {
 	llm          *llm.Client
 	classifier   *classifier.Classifier
 	ideaExpander *scheduler.IdeaExpander
-	letterGen    LetterGenerator // optional, for test endpoints
+	letterGen    LetterGenerator
+	narratorTyped *narrator.Narrator // optional, for test endpoints
 }
 
 func NewHandlers(cfg *config.Config, database *db.DB, v *vault.Vault, llmClient *llm.Client) *Handlers {
@@ -199,8 +201,15 @@ func (h *Handlers) Capture(w http.ResponseWriter, r *http.Request) {
 		Content:    result.CleanedText,
 	}
 
-	if _, err := h.vault.WriteNote(note); err != nil {
-		log.Printf("Failed to write note %s: %v", captureID, err)
+	// Route Journal to Raw/ for narrator processing
+	var writeErr error
+	if result.Category == models.CategoryJournal {
+		_, writeErr = h.vault.WriteRawJournalCapture(note)
+	} else {
+		_, writeErr = h.vault.WriteNote(note)
+	}
+	if writeErr != nil {
+		log.Printf("Failed to write note %s: %v", captureID, writeErr)
 		writeError(w, http.StatusInternalServerError, "failed to write note", "WRITE_ERROR")
 		return
 	}
@@ -413,11 +422,17 @@ func (h *Handlers) Clarify(w http.ResponseWriter, r *http.Request) {
 		Content:    pending.RawText,
 	}
 
-	if _, err := h.vault.WriteNote(note); err != nil {
+	// Route Journal to Raw/ for narrator processing
+	var clarifyWriteErr error
+	if req.Destination == models.CategoryJournal {
+		_, clarifyWriteErr = h.vault.WriteRawJournalCapture(note)
+	} else {
+		_, clarifyWriteErr = h.vault.WriteNote(note)
+	}
+	if clarifyWriteErr != nil {
 		writeError(w, http.StatusInternalServerError, "failed to write note", "WRITE_ERROR")
 		return
 	}
-
 	// Boost signals asynchronously (fail closed - doesn't affect clarify)
 	go h.boostSignals(pending.RawText, req.Destination)
 
@@ -664,4 +679,64 @@ func (h *Handlers) boostSignals(text, category string) {
 			log.Printf("Failed to boost category signal %s: %v", key, err)
 		}
 	}
+}
+
+// Narrator interface for journal endpoints
+type NarratorInterface interface {
+	Update(ctx context.Context) (*struct {
+		ProcessedCount int
+		DaysUpdated    []string
+		Errors         []string
+	}, error)
+	Status() (*struct {
+		LastProcessedRaw string
+		LastProcessedTS  time.Time
+		CurrentDay       string
+		LastUpdateAt     time.Time
+		DayStatus        string
+		LastNightRunAt   time.Time
+	}, error)
+}
+
+// SetNarrator sets the narrator for journal endpoints
+// SetNarrator sets the narrator for journal endpoints
+func (h *Handlers) SetNarrator(n *narrator.Narrator) {
+	h.narratorTyped = n
+}
+
+// JournalUpdate handles POST /api/v1/journal/update
+func (h *Handlers) JournalUpdate(w http.ResponseWriter, r *http.Request) {
+	if h.narratorTyped == nil {
+		writeError(w, http.StatusServiceUnavailable, "narrator not configured", "NOT_CONFIGURED")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	result, err := h.narratorTyped.Update(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error(), "UPDATE_FAILED")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(result)
+}
+
+// JournalStatus handles GET /api/v1/journal/status
+func (h *Handlers) JournalStatus(w http.ResponseWriter, r *http.Request) {
+	if h.narratorTyped == nil {
+		writeError(w, http.StatusServiceUnavailable, "narrator not configured", "NOT_CONFIGURED")
+		return
+	}
+
+	state, err := h.narratorTyped.Status()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error(), "STATUS_FAILED")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(state)
 }

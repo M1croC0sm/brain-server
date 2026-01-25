@@ -134,3 +134,42 @@ func slugify(s string) string {
 
 	return s
 }
+
+// WriteRawJournalCapture writes a journal capture to the Raw/ folder for narrator processing
+func (v *Vault) WriteRawJournalCapture(note Note) (string, error) {
+	// Build filename: YYYY-MM-DD_HHMMSS_cap_xxxxx.md
+	dateStr := note.Created.Format("2006-01-02")
+	timeStr := note.Created.Format("150405")
+	filename := fmt.Sprintf("%s_%s_%s.md", dateStr, timeStr, note.ID)
+
+	// Build path: Vault/Journal/Raw/{filename}
+	relPath := filepath.Join("Journal", "Raw", filename)
+	fullPath := filepath.Join(v.basePath, relPath)
+
+	// Build content with YAML frontmatter (narrator format)
+	content := v.buildRawJournalContent(note)
+
+	if err := WriteFileAtomic(fullPath, []byte(content)); err != nil {
+		return "", fmt.Errorf("writing raw journal: %w", err)
+	}
+
+	return relPath, nil
+}
+
+func (v *Vault) buildRawJournalContent(note Note) string {
+	var sb strings.Builder
+
+	// YAML frontmatter (narrator format)
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("id: %s\n", note.ID))
+	sb.WriteString(fmt.Sprintf("created: %s\n", note.Created.Format(time.RFC3339)))
+	sb.WriteString(fmt.Sprintf("actor: %s\n", note.Actor))
+	sb.WriteString(fmt.Sprintf("device: %s\n", note.DeviceID))
+	sb.WriteString("---\n\n")
+
+	// Content
+	sb.WriteString(note.Content)
+	sb.WriteString("\n")
+
+	return sb.String()
+}
