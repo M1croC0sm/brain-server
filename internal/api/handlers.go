@@ -217,6 +217,10 @@ func (h *Handlers) Capture(w http.ResponseWriter, r *http.Request) {
 	// Boost signals asynchronously (fail closed - doesn't affect capture)
 	go h.boostSignals(req.Text, result.Category)
 
+	// Trigger journal narration asynchronously for Journal category
+	if result.Category == models.CategoryJournal && h.narratorTyped != nil {
+		go h.narrateJournal()
+	}
 	// Trigger idea expansion asynchronously for Ideas category
 	if result.Category == models.CategoryIdeas {
 		go h.expandIdea(captureID, result.Title, result.CleanedText, result.Tags)
@@ -435,6 +439,10 @@ func (h *Handlers) Clarify(w http.ResponseWriter, r *http.Request) {
 	}
 	// Boost signals asynchronously (fail closed - doesn't affect clarify)
 	go h.boostSignals(pending.RawText, req.Destination)
+	// Trigger journal narration asynchronously for Journal category
+	if req.Destination == models.CategoryJournal && h.narratorTyped != nil {
+		go h.narrateJournal()
+	}
 
 	resp := models.ClarifyResponse{
 		CaptureID: req.CaptureID,
@@ -739,4 +747,20 @@ func (h *Handlers) JournalStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(state)
+}
+
+// narrateJournal triggers async journal narration (fail closed)
+func (h *Handlers) narrateJournal() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	result, err := h.narratorTyped.Update(ctx)
+	if err != nil {
+		log.Printf("Journal narration failed: %v", err)
+		return
+	}
+
+	if result.ProcessedCount > 0 {
+		log.Printf("Journal narration: processed %d entries", result.ProcessedCount)
+	}
 }
